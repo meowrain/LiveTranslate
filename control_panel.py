@@ -899,8 +899,24 @@ class ControlPanel(QWidget):
         return widget
 
     def _create_cache_tab(self):
+        from PyQt6.QtWidgets import QCheckBox
+
         widget = QWidget()
         layout = QVBoxLayout(widget)
+        s = self._current_settings
+
+        # Transcript auto-save group
+        ts_group = QGroupBox(t("group_transcript"))
+        ts_layout = QHBoxLayout(ts_group)
+        self._auto_save_transcript_cb = QCheckBox(t("label_auto_save_transcript"))
+        self._auto_save_transcript_cb.setToolTip(t("auto_save_transcript_tooltip"))
+        self._auto_save_transcript_cb.setChecked(s.get("auto_save_transcript", True))
+        self._auto_save_transcript_cb.toggled.connect(self._auto_save)
+        ts_layout.addWidget(self._auto_save_transcript_cb, 1)
+        ts_open_btn = QPushButton(t("btn_open_transcripts"))
+        ts_open_btn.clicked.connect(self._open_transcripts_folder)
+        ts_layout.addWidget(ts_open_btn)
+        layout.addWidget(ts_group)
 
         top_row = QHBoxLayout()
         self._cache_total = QLabel("")
@@ -928,6 +944,12 @@ class ControlPanel(QWidget):
         self._refresh_cache()
 
         return widget
+
+    def _open_transcripts_folder(self):
+        from pathlib import Path
+        ts_dir = Path(__file__).parent / "transcripts"
+        ts_dir.mkdir(parents=True, exist_ok=True)
+        os.startfile(str(ts_dir))
 
     def _on_tab_changed(self, index):
         if index == self._cache_tab_index:
@@ -1286,6 +1308,10 @@ class ControlPanel(QWidget):
         if prompt_text:
             self._current_settings["system_prompt"] = prompt_text
         self._current_settings["timeout"] = self._timeout_spin.value()
+        if hasattr(self, "_auto_save_transcript_cb"):
+            self._current_settings["auto_save_transcript"] = (
+                self._auto_save_transcript_cb.isChecked()
+            )
         if hasattr(self, "_style_preset"):
             self._current_settings["style"] = self._collect_style()
         safe = {

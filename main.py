@@ -35,6 +35,7 @@ from audio_capture import AudioCapture
 from vad_processor import VADProcessor
 from asr_engine import ASREngine
 from translator import Translator, RepetitionError
+from transcript_writer import TranscriptWriter
 
 from PyQt6.QtWidgets import QApplication, QSystemTrayIcon, QMenu, QDialog, QMessageBox
 from PyQt6.QtGui import QAction, QActionGroup, QIcon, QPixmap, QPainter, QColor, QFont
@@ -178,6 +179,21 @@ class LiveTranslateApp:
         self._asr_queue = queue.Queue(maxsize=16)
         self._tl_executor = ThreadPoolExecutor(max_workers=8)
 
+        self._transcript = TranscriptWriter(Path(__file__).parent / "transcripts")
+
+        # Memory diagnostic state
+        import psutil
+        self._mem_proc = psutil.Process(os.getpid())
+        self._mem_baseline_mb = self._mem_proc.memory_info().rss / 1024 / 1024
+        self._mem_last_mb = self._mem_baseline_mb
+        self._mem_seg_count = 0
+        self._mem_periodic_timer = None
+        # Memory ceiling: warn once when RSS exceeds threshold (FunASR has a
+        # known C-side leak ~5MB/seg that GC can't reclaim; user restarts when needed)
+        self._mem_threshold_mb = 4096
+        self._mem_warned = False
+        self._mem_warning_callback = None
+
         self._asr_count = 0
         self._translate_count = 0
         self._total_prompt_tokens = 0
@@ -273,6 +289,8 @@ class LiveTranslateApp:
                 self._overlay.set_target_language(self._target_language)
         if "timeout" in settings and self._translator:
             self._translator.set_timeout(settings["timeout"])
+        if "auto_save_transcript" in settings:
+            self._transcript.set_enabled(settings["auto_save_transcript"])
 
     def _on_target_language_changed(self, lang: str):
         self._target_language = lang
@@ -461,6 +479,69 @@ class LiveTranslateApp:
             self._overlay.update_asr_device(f"{display_name} [{device}]")
         log.info(f"ASR engine ready: {engine_type} on {device}")
 
+    def _mem_snapshot(self) -> dict:
+        rss_mb = self._mem_proc.memory_info().rss / 1024 / 1024
+        gpu_alloc_mb = 0.0
+        gpu_reserved_mb = 0.0
+        try:
+            if torch.cuda.is_available():
+                gpu_alloc_mb = torch.cuda.memory_allocated() / 1024 / 1024
+                gpu_reserved_mb = torch.cuda.memory_reserved() / 1024 / 1024
+        except Exception:
+            pass
+        msgs = len(self._overlay._messages) if self._overlay else 0
+        vad_buf = len(self._vad._speech_buffer)
+        return {
+            "rss": rss_mb,
+            "gpu_alloc": gpu_alloc_mb,
+            "gpu_reserved": gpu_reserved_mb,
+            "msgs": msgs,
+            "vad_buf": vad_buf,
+        }
+
+    def _log_mem_after_segment(self):
+        self._mem_seg_count += 1
+        snap = self._mem_snapshot()
+        delta = snap["rss"] - self._mem_last_mb
+        total_delta = snap["rss"] - self._mem_baseline_mb
+        self._mem_last_mb = snap["rss"]
+        log.info(
+            f"MEM[seg#{self._mem_seg_count}] RSS={snap['rss']:.1f}MB "
+            f"(Δ{delta:+.2f} since last, {total_delta:+.1f} since start) "
+            f"GPU(alloc/reserved)={snap['gpu_alloc']:.0f}/{snap['gpu_reserved']:.0f}MB "
+            f"msgs={snap['msgs']} vad_buf={snap['vad_buf']}"
+        )
+        self._check_memory_threshold(snap["rss"])
+
+    def _check_memory_threshold(self, rss_mb: float):
+        if self._mem_warned or rss_mb < self._mem_threshold_mb:
+            return
+        self._mem_warned = True
+        log.warning(
+            f"Memory ceiling reached: RSS={rss_mb:.0f}MB "
+            f"(threshold {self._mem_threshold_mb}MB). "
+            f"Recommend restarting LiveTranslate to free C-side allocator caches."
+        )
+        if self._mem_warning_callback is not None:
+            try:
+                self._mem_warning_callback(rss_mb)
+            except Exception as e:
+                log.warning(f"Memory warning callback failed: {e}")
+
+    def set_memory_warning_callback(self, callback):
+        self._mem_warning_callback = callback
+
+    def _log_mem_periodic(self):
+        snap = self._mem_snapshot()
+        total_delta = snap["rss"] - self._mem_baseline_mb
+        log.info(
+            f"MEM[tick] RSS={snap['rss']:.1f}MB ({total_delta:+.1f} since start) "
+            f"GPU(alloc/reserved)={snap['gpu_alloc']:.0f}/{snap['gpu_reserved']:.0f}MB "
+            f"msgs={snap['msgs']} segs={self._mem_seg_count} "
+            f"asr_count={self._asr_count} tl_count={self._translate_count}"
+        )
+        self._check_memory_threshold(snap["rss"])
+
     def _compute_cost(self):
         if self._input_price > 0 or self._output_price > 0:
             return (self._total_prompt_tokens * self._input_price +
@@ -483,6 +564,10 @@ class LiveTranslateApp:
             self._total_completion_tokens += ct
             cost = self._compute_cost()
             log.info(f"Translate ({tl_ms:.0f}ms): {translated}")
+            if translated:
+                self._transcript.write_translation(msg_id, translated)
+            else:
+                self._transcript.finalize_no_translation(msg_id)
             if self._overlay:
                 self._overlay.update_translation(msg_id, translated, tl_ms)
                 self._overlay.update_stats(
@@ -499,6 +584,7 @@ class LiveTranslateApp:
                 self._subwin.update_text(text, tl_dict)
         except RepetitionError:
             log.warning("Repetition loop detected, model may not support structured output well")
+            self._transcript.finalize_no_translation(msg_id)
             if self._overlay:
                 self._overlay.update_translation(
                     msg_id, f"[{t('error_repetition')}]", 0
@@ -511,6 +597,7 @@ class LiveTranslateApp:
                 log.warning(f"Translate error: {e}")
             else:
                 log.error(f"Translate error: {e}", exc_info=True)
+            self._transcript.finalize_no_translation(msg_id)
             if self._overlay:
                 self._overlay.update_translation(msg_id, f"[error: {e}]", 0)
 
@@ -564,6 +651,17 @@ class LiveTranslateApp:
         )
         self._capture_thread.start()
         self._asr_thread.start()
+        # Periodic memory snapshot every 30s
+        if self._mem_periodic_timer is None:
+            self._mem_periodic_timer = QTimer()
+            self._mem_periodic_timer.timeout.connect(self._log_mem_periodic)
+            self._mem_periodic_timer.start(30000)
+        snap = self._mem_snapshot()
+        log.info(
+            f"MEM[start] RSS={snap['rss']:.1f}MB "
+            f"GPU(alloc/reserved)={snap['gpu_alloc']:.0f}/{snap['gpu_reserved']:.0f}MB "
+            f"(baseline for delta tracking)"
+        )
         log.info("Pipeline started (capture + ASR threads)")
 
     def stop(self):
@@ -593,6 +691,20 @@ class LiveTranslateApp:
         self._last_interim_check_time = 0.0
         self._interim_committed_tail = ""
         self._tl_executor.shutdown(wait=False)
+        self._transcript.close()
+        if self._mem_periodic_timer is not None:
+            try:
+                self._mem_periodic_timer.stop()
+            except Exception:
+                pass
+            self._mem_periodic_timer = None
+        snap = self._mem_snapshot()
+        total_delta = snap["rss"] - self._mem_baseline_mb
+        log.info(
+            f"MEM[stop] RSS={snap['rss']:.1f}MB ({total_delta:+.1f} since start) "
+            f"GPU(alloc/reserved)={snap['gpu_alloc']:.0f}/{snap['gpu_reserved']:.0f}MB "
+            f"segs={self._mem_seg_count}"
+        )
         log.info("Pipeline stopped")
 
     def pause(self):
@@ -665,6 +777,7 @@ class LiveTranslateApp:
             self._overlay.add_message(
                 msg_id, timestamp, original_text, source_lang, asr_ms
             )
+        self._transcript.write_original(msg_id, timestamp, original_text)
 
         # Store for subtitle window (translation will be added later)
         self._last_original = original_text
@@ -681,6 +794,7 @@ class LiveTranslateApp:
 
         if source_lang == target_lang:
             log.info(f"Same language ({source_lang}), no translation")
+            self._transcript.finalize_no_translation(msg_id)
             if self._overlay:
                 self._overlay.update_translation(msg_id, "", 0)
                 self._overlay.update_stats(
@@ -709,6 +823,7 @@ class LiveTranslateApp:
                 )
             except RuntimeError:
                 log.warning("Translation executor shut down, skipping")
+        self._log_mem_after_segment()
 
     # ── Incremental ASR ──
 
@@ -902,6 +1017,7 @@ class LiveTranslateApp:
 
         if self._overlay:
             self._overlay.add_message(msg_id, timestamp, original_text, source_lang, asr_ms)
+        self._transcript.write_original(msg_id, timestamp, original_text)
 
         self._last_original = original_text
         self._last_msg_id = msg_id
@@ -914,6 +1030,7 @@ class LiveTranslateApp:
 
         if source_lang == target_lang:
             log.info(f"Same language ({source_lang}), no translation")
+            self._transcript.finalize_no_translation(msg_id)
             if self._overlay:
                 self._overlay.update_translation(msg_id, "", 0)
                 self._overlay.update_stats(self._asr_count, self._translate_count, self._total_prompt_tokens, self._total_completion_tokens, self._compute_cost())
@@ -930,6 +1047,7 @@ class LiveTranslateApp:
                 self._tl_executor.submit(self._translate_async, msg_id, original_text, source_lang, extra_langs or None)
             except RuntimeError:
                 log.warning("Translation executor shut down, skipping")
+        self._log_mem_after_segment()
 
     def _process_interim_final(self, speech_segment):
         """Handle VAD flush after interim outputs were already made."""
@@ -1615,6 +1733,16 @@ def main():
 
     tray.setContextMenu(menu)
     tray.show()
+
+    def _on_memory_warning(rss_mb: float):
+        tray.showMessage(
+            "LiveTranslate",
+            t("mem_warning_msg").format(rss=int(rss_mb)),
+            QSystemTrayIcon.MessageIcon.Warning,
+            10000,
+        )
+
+    live_trans.set_memory_warning_callback(_on_memory_warning)
 
     QTimer.singleShot(500, on_start)
 
