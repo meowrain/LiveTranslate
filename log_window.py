@@ -7,7 +7,7 @@ from PyQt6.QtWidgets import (
     QPushButton,
     QCheckBox,
 )
-from PyQt6.QtCore import pyqtSignal, pyqtSlot
+from PyQt6.QtCore import Qt, pyqtSignal, pyqtSlot
 from PyQt6.QtGui import QFont, QTextCursor
 from i18n import t
 
@@ -34,6 +34,7 @@ class LogWindow(QWidget):
         self.setWindowTitle(t("window_log"))
         self.setMinimumSize(700, 400)
         self.resize(900, 500)
+        self.setWindowFlags(self.windowFlags() | Qt.WindowType.Tool)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(4, 4, 4, 4)
