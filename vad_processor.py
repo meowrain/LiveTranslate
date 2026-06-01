@@ -28,11 +28,32 @@ class VADProcessor:
         self._chunk_duration = chunk_duration
         self.mode = "silero"  # "silero", "energy", "disabled"
 
-        self._model, self._utils = torch.hub.load(
-            repo_or_dir="snakers4/silero-vad",
-            model="silero_vad",
-            trust_repo=True,
-        )
+        # Try local cache first (skip GitHub network check)
+        import os
+        from pathlib import Path
+
+        torch_home = Path(os.environ.get("TORCH_HOME", Path.home() / ".cache" / "torch"))
+        hub_dir = torch_home / "hub"
+        self._model = None
+        if hub_dir.exists():
+            for cached in hub_dir.glob("snakers4_silero-vad*"):
+                if cached.is_dir() and (cached / "hubconf.py").exists():
+                    try:
+                        self._model, self._utils = torch.hub.load(
+                            repo_or_dir=str(cached),
+                            model="silero_vad",
+                            source="local",
+                        )
+                        log.info(f"Loaded Silero VAD from local cache: {cached}")
+                        break
+                    except Exception:
+                        pass
+        if self._model is None:
+            self._model, self._utils = torch.hub.load(
+                repo_or_dir="snakers4/silero-vad",
+                model="silero_vad",
+                trust_repo=True,
+            )
         self._model.eval()
 
         self._speech_buffer = []

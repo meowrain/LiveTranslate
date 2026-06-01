@@ -169,6 +169,9 @@ def get_local_model_path(engine_type, hub="ms"):
 def download_silero():
     import torch
 
+    if is_silero_cached():
+        log.info("Silero VAD already cached, skipping download")
+        return
     log.info("Downloading Silero VAD...")
     model, _ = torch.hub.load(
         repo_or_dir="snakers4/silero-vad",
