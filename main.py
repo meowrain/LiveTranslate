@@ -161,8 +161,11 @@ class LiveTranslateApp:
         self._asr_lock = threading.Lock()
         self._vad_lock = threading.Lock()
         self._target_language = config["translation"]["target_language"]
-        self._translator = None  # Created lazily in _deferred_init via _on_model_changed
-        self._on_asr_ready_callback = None  # Called when ASR finishes loading
+        self._translator = create_translator(
+            model_config=config["translation"],
+            target_language=self._target_language,
+            system_prompt=config["translation"].get("system_prompt"),
+        )
         self._overlay = None
         self._subwin = None
         self._panel = None
@@ -374,9 +377,9 @@ class LiveTranslateApp:
             old_engine = self._asr
             self._asr = None
 
-        # Show loading status on overlay (non-blocking)
-        if self._overlay:
-            self._overlay.update_asr_device(f"{display_name} [loading...]")
+        dlg = _ModelLoadDialog(
+            t("loading_model").format(name=display_name), parent=parent
+        )
 
         new_asr = [None]
         load_error = [None]
@@ -454,10 +457,6 @@ class LiveTranslateApp:
 
         def _on_loaded():
             if load_error[0]:
-                log.warning(f"ASR load failed: {load_error[0]}")
-                if self._overlay:
-                    self._overlay.update_asr_device(f"{display_name} [error]")
-                # Show error dialog non-blocking
                 QMessageBox.warning(
                     parent,
                     t("error_title"),
@@ -475,8 +474,6 @@ class LiveTranslateApp:
             if self._overlay:
                 self._overlay.update_asr_device(f"{display_name} [{device}]")
             log.info(f"ASR engine ready: {engine_type} on {device}")
-            if self._on_asr_ready_callback:
-                self._on_asr_ready_callback()
 
         thread = threading.Thread(target=_load, daemon=True)
         thread.start()
@@ -486,11 +483,18 @@ class LiveTranslateApp:
         def _check():
             if not thread.is_alive():
                 poll_timer.stop()
-                _on_loaded()
+                dlg.accept()
 
         poll_timer.setInterval(100)
         poll_timer.timeout.connect(_check)
         poll_timer.start()
+
+        def _on_dialog_done():
+            poll_timer.stop()
+            _on_loaded()
+
+        dlg.finished.connect(_on_dialog_done)
+        dlg.show()
 
     def _mem_snapshot(self) -> dict:
         rss_mb = self._mem_proc.memory_info().rss / 1024 / 1024
@@ -1310,7 +1314,6 @@ def main():
         active_model = panel.get_active_model()
         if active_model:
             live_trans._on_model_changed(active_model)
-        # Pipeline will start when ASR engine is loaded (via _on_asr_ready_callback)
 
     QTimer.singleShot(100, _deferred_init)
 
@@ -1324,8 +1327,7 @@ def main():
     pause_action = QAction(t("tray_pause"))
     _is_running = [True]  # mutable for closure
 
-    def _start_pipeline():
-        """Start the audio pipeline (called when ASR engine is ready)."""
+    def on_start():
         try:
             live_trans.start()
             overlay.set_running(True)
@@ -1333,8 +1335,6 @@ def main():
             pause_action.setText(t("tray_pause"))
         except Exception as e:
             log.error(f"Start error: {e}", exc_info=True)
-
-    live_trans._on_asr_ready_callback = _start_pipeline
 
     def on_pause():
         live_trans.pause()
@@ -1376,7 +1376,6 @@ def main():
                     3000,
                 )
         else:
-            overlay.restore_from_minimize()
             overlay.show()
             overlay.raise_()
             overlay_toggle_action.setText(t("tray_hide_overlay"))
@@ -1732,6 +1731,8 @@ def main():
         )
 
     live_trans.set_memory_warning_callback(_on_memory_warning)
+
+    QTimer.singleShot(500, on_start)
 
     signal.signal(signal.SIGINT, lambda *_: on_quit())
     timer = QTimer()
