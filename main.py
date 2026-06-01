@@ -416,6 +416,28 @@ class LiveTranslateApp:
 
                     dev_str = dev if dev == "cpu" else f"cuda:{dev_index}"
                     new_asr[0] = AnimeWhisperEngine(device=dev_str, hub=hub)
+                elif engine_type == "dashscope":
+                    from asr_dashscope import DashScopeASREngine
+
+                    api_key = ""
+                    ds_model = "qwen3-asr-flash-realtime"
+                    ds_server_vad = False
+                    if self._panel:
+                        ps = self._panel.get_settings()
+                        api_key = ps.get("dashscope_api_key", "")
+                        ds_model = ps.get("dashscope_model", "qwen3-asr-flash-realtime")
+                        ds_server_vad = ps.get("dashscope_server_vad", False)
+                    if not api_key:
+                        load_error[0] = "DashScope API Key not configured. Please set it in Settings → ASR Engine."
+                    else:
+                        asr_lang = self._panel.get_settings().get("asr_language", "auto") if self._panel else "auto"
+                        lang = asr_lang if asr_lang != "auto" else None
+                        new_asr[0] = DashScopeASREngine(
+                            api_key=api_key,
+                            model=ds_model,
+                            language=lang,
+                            server_vad=ds_server_vad,
+                        )
                 else:
                     download_root = str((MODELS_DIR / "huggingface" / "hub").resolve())
                     compute = self._config["asr"]["compute_type"]
@@ -794,36 +816,14 @@ class LiveTranslateApp:
             extra_langs = subwin_langs - {target_lang, source_lang}
 
         if source_lang == target_lang:
-            log.info(f"Same language ({source_lang}), no translation")
-            self._transcript.finalize_no_translation(msg_id)
-            if self._overlay:
-                self._overlay.update_translation(msg_id, "", 0)
-                self._overlay.update_stats(
-                    self._asr_count,
-                    self._translate_count,
-                    self._total_prompt_tokens,
-                    self._total_completion_tokens,
-                    self._compute_cost(),
-                )
-            if self._subwin and self._subwin.isVisible():
-                # Primary is same language; still need to translate extra langs
-                if extra_langs:
-                    try:
-                        self._tl_executor.submit(
-                            self._translate_subwin_only, original_text, source_lang, extra_langs
-                        )
-                    except RuntimeError:
-                        pass
-                else:
-                    self._subwin.update_text(original_text, {target_lang: original_text})
-        else:
-            try:
-                self._tl_executor.submit(
-                    self._translate_async, msg_id, original_text, source_lang,
-                    extra_langs or None,
-                )
-            except RuntimeError:
-                log.warning("Translation executor shut down, skipping")
+            log.info(f"Same language ({source_lang}), still translating via API")
+        try:
+            self._tl_executor.submit(
+                self._translate_async, msg_id, original_text, source_lang,
+                extra_langs or None,
+            )
+        except RuntimeError:
+            log.warning("Translation executor shut down, skipping")
         self._log_mem_after_segment()
 
     # ── Incremental ASR ──
@@ -1030,24 +1030,11 @@ class LiveTranslateApp:
             extra_langs = subwin_langs - {target_lang, source_lang}
 
         if source_lang == target_lang:
-            log.info(f"Same language ({source_lang}), no translation")
-            self._transcript.finalize_no_translation(msg_id)
-            if self._overlay:
-                self._overlay.update_translation(msg_id, "", 0)
-                self._overlay.update_stats(self._asr_count, self._translate_count, self._total_prompt_tokens, self._total_completion_tokens, self._compute_cost())
-            if self._subwin and self._subwin.isVisible():
-                if extra_langs:
-                    try:
-                        self._tl_executor.submit(self._translate_subwin_only, original_text, source_lang, extra_langs)
-                    except RuntimeError:
-                        pass
-                else:
-                    self._subwin.update_text(original_text, {target_lang: original_text})
-        else:
-            try:
-                self._tl_executor.submit(self._translate_async, msg_id, original_text, source_lang, extra_langs or None)
-            except RuntimeError:
-                log.warning("Translation executor shut down, skipping")
+            log.info(f"Same language ({source_lang}), still translating via API")
+        try:
+            self._tl_executor.submit(self._translate_async, msg_id, original_text, source_lang, extra_langs or None)
+        except RuntimeError:
+            log.warning("Translation executor shut down, skipping")
         self._log_mem_after_segment()
 
     def _process_interim_final(self, speech_segment):
