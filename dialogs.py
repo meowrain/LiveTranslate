@@ -21,6 +21,7 @@ from PyQt6.QtWidgets import (
     QLabel,
     QLineEdit,
     QPushButton,
+    QStackedWidget,
     QTextEdit,
     QVBoxLayout,
     QWidget,
@@ -89,7 +90,6 @@ class _ModelLoadDialog(QDialog):
         self.setWindowTitle("LiveTranslate")
         self.setMinimumWidth(500)
         self.setMinimumHeight(300)
-        self.setModal(True)
         self.setWindowFlags(
             Qt.WindowType.Dialog
             | Qt.WindowType.WindowTitleHint
@@ -378,28 +378,41 @@ class ModelDownloadDialog(QDialog):
 
 
 class ModelEditDialog(QDialog):
-    """Dialog for adding/editing a model configuration."""
+    """Dialog for adding/editing a model configuration.
+
+    Supports both LLM (OpenAI-compatible) and traditional translation APIs
+    (Baidu, Tencent, Youdao, DeepL).  The ``type`` field in model_data
+    determines which UI is shown (default ``"llm"`` for backward compat).
+    """
 
     def __init__(self, parent=None, model_data=None):
         super().__init__(parent)
         self.setWindowTitle(
             t("dialog_edit_model") if model_data else t("dialog_add_model")
         )
-        self.setMinimumWidth(500)
+        self.setMinimumWidth(520)
 
         root = QVBoxLayout(self)
 
-        # --- Basic section ---
-        basic_group = QGroupBox()
-        basic_group.setFlat(True)
-        layout = QFormLayout(basic_group)
+        # ---- Translator type selector ----
+        type_group = QGroupBox()
+        type_group.setFlat(True)
+        type_form = QFormLayout(type_group)
+        self._tl_type = QComboBox()
+        self._tl_type.addItem(t("translator_llm"), "llm")
+        self._tl_type.addItem(t("translator_baidu"), "baidu")
+        self._tl_type.addItem(t("translator_tencent"), "tencent")
+        self._tl_type.addItem(t("translator_youdao"), "youdao")
+        self._tl_type.addItem(t("translator_deepl"), "deepl")
+        self._tl_type.currentIndexChanged.connect(self._on_type_changed)
+        type_form.addRow(t("label_translator_type"), self._tl_type)
+        root.addWidget(type_group)
 
+        # ---- Common fields (name + proxy) ----
+        common_group = QGroupBox()
+        common_group.setFlat(True)
+        common_form = QFormLayout(common_group)
         self._name = QLineEdit()
-        self._api_base = QLineEdit()
-        self._api_key = QLineEdit()
-        self._api_key.setEchoMode(QLineEdit.EchoMode.Password)
-        self._model = QLineEdit()
-
         self._proxy_mode = QComboBox()
         self._proxy_mode.addItems(
             [t("proxy_none"), t("proxy_system"), t("proxy_custom")]
@@ -408,6 +421,22 @@ class ModelEditDialog(QDialog):
         self._proxy_url = QLineEdit()
         self._proxy_url.setPlaceholderText("http://127.0.0.1:7890")
         self._proxy_url.setEnabled(False)
+        common_form.addRow(t("label_display_name"), self._name)
+        common_form.addRow(t("label_proxy"), self._proxy_mode)
+        common_form.addRow(t("label_proxy_url"), self._proxy_url)
+        root.addWidget(common_group)
+
+        # ---- Stacked widget: LLM page vs Traditional API page ----
+        self._stack = QStackedWidget()
+
+        # == Page 0: LLM config ==
+        llm_page = QWidget()
+        llm_form = QFormLayout(llm_page)
+
+        self._api_base = QLineEdit()
+        self._api_key = QLineEdit()
+        self._api_key.setEchoMode(QLineEdit.EchoMode.Password)
+        self._model = QLineEdit()
 
         self._no_system_role = QCheckBox(t("no_system_role"))
         self._no_system_role.setToolTip(t("no_system_role_hint"))
@@ -442,25 +471,84 @@ class ModelEditDialog(QDialog):
         price_row.addWidget(QLabel(t("label_output_price")))
         price_row.addWidget(self._output_price)
 
-        layout.addRow(t("label_display_name"), self._name)
-        layout.addRow(t("label_api_base"), self._api_base)
-        layout.addRow(t("label_api_key"), self._api_key)
-        layout.addRow(t("label_model"), self._model)
-        layout.addRow(t("label_proxy"), self._proxy_mode)
-        layout.addRow(t("label_proxy_url"), self._proxy_url)
-        layout.addRow(t("label_pricing"), price_row)
-        layout.addRow(t("label_context_turns"), self._context_turns)
-        layout.addRow("", self._streaming)
-        layout.addRow("", self._json_response)
-        layout.addRow("", self._no_system_role)
-        layout.addRow("", self._no_think)
+        llm_form.addRow(t("label_api_base"), self._api_base)
+        llm_form.addRow(t("label_api_key"), self._api_key)
+        llm_form.addRow(t("label_model"), self._model)
+        llm_form.addRow(t("label_pricing"), price_row)
+        llm_form.addRow(t("label_context_turns"), self._context_turns)
+        llm_form.addRow("", self._streaming)
+        llm_form.addRow("", self._json_response)
+        llm_form.addRow("", self._no_system_role)
+        llm_form.addRow("", self._no_think)
 
-        root.addWidget(basic_group)
+        self._stack.addWidget(llm_page)  # index 0
 
-        # --- Advanced section ---
-        adv_group = QGroupBox(t("label_advanced_params"))
-        adv_layout = QFormLayout(adv_group)
-        adv_group.setToolTip(t("override_hint"))
+        # == Page 1: Traditional API config ==
+        api_page = QWidget()
+        api_layout = QVBoxLayout(api_page)
+        api_layout.setContentsMargins(0, 0, 0, 0)
+
+        # Sub-stacked widget for API-specific fields
+        self._api_stack = QStackedWidget()
+
+        # -- Baidu --
+        baidu_page = QWidget()
+        baidu_form = QFormLayout(baidu_page)
+        self._baidu_app_id = QLineEdit()
+        self._baidu_secret_key = QLineEdit()
+        self._baidu_secret_key.setEchoMode(QLineEdit.EchoMode.Password)
+        baidu_form.addRow(t("label_app_id"), self._baidu_app_id)
+        baidu_form.addRow(t("label_secret_key"), self._baidu_secret_key)
+        self._api_stack.addWidget(baidu_page)  # index 0
+
+        # -- Tencent --
+        tencent_page = QWidget()
+        tencent_form = QFormLayout(tencent_page)
+        self._tencent_secret_id = QLineEdit()
+        self._tencent_secret_key = QLineEdit()
+        self._tencent_secret_key.setEchoMode(QLineEdit.EchoMode.Password)
+        self._tencent_region = QComboBox()
+        regions = [
+            ("ap-guangzhou", "ap-guangzhou"),
+            ("ap-beijing", "ap-beijing"),
+            ("ap-shanghai", "ap-shanghai"),
+            ("ap-hongkong", "ap-hongkong"),
+            ("na-siliconvalley", "na-siliconvalley"),
+        ]
+        for label, data in regions:
+            self._tencent_region.addItem(label, data)
+        tencent_form.addRow(t("label_secret_id"), self._tencent_secret_id)
+        tencent_form.addRow(t("label_secret_key"), self._tencent_secret_key)
+        tencent_form.addRow(t("label_region"), self._tencent_region)
+        self._api_stack.addWidget(tencent_page)  # index 1
+
+        # -- Youdao --
+        youdao_page = QWidget()
+        youdao_form = QFormLayout(youdao_page)
+        self._youdao_app_key = QLineEdit()
+        self._youdao_app_secret = QLineEdit()
+        self._youdao_app_secret.setEchoMode(QLineEdit.EchoMode.Password)
+        youdao_form.addRow(t("label_app_key"), self._youdao_app_key)
+        youdao_form.addRow(t("label_app_secret"), self._youdao_app_secret)
+        self._api_stack.addWidget(youdao_page)  # index 2
+
+        # -- DeepL --
+        deepl_page = QWidget()
+        deepl_form = QFormLayout(deepl_page)
+        self._deepl_api_key = QLineEdit()
+        self._deepl_api_key.setEchoMode(QLineEdit.EchoMode.Password)
+        deepl_form.addRow(t("label_api_key"), self._deepl_api_key)
+        self._api_stack.addWidget(deepl_page)  # index 3
+
+        api_layout.addWidget(self._api_stack)
+        self._stack.addWidget(api_page)  # index 1
+
+        root.addWidget(self._stack)
+
+        # ---- LLM-only: Advanced section ----
+        self._adv_group = QGroupBox(t("label_advanced_params"))
+        adv_layout = QFormLayout(self._adv_group)
+        self._adv_group.setToolTip(t("override_hint"))
 
         self._adv_temperature = QDoubleSpinBox()
         self._adv_temperature.setRange(0.0, 2.0)
@@ -518,14 +606,11 @@ class ModelEditDialog(QDialog):
         self._adv_extra_body.setFixedHeight(70)
         adv_layout.addRow(t("label_extra_body"), self._adv_extra_body)
 
-        root.addWidget(adv_group)
+        root.addWidget(self._adv_group)
 
-        # --- Populate from model_data ---
+        # ---- Populate from model_data ----
         if model_data:
             self._name.setText(model_data.get("name", ""))
-            self._api_base.setText(model_data.get("api_base", ""))
-            self._api_key.setText(model_data.get("api_key", ""))
-            self._model.setText(model_data.get("model", ""))
             proxy = model_data.get("proxy", "none")
             if proxy == "system":
                 self._proxy_mode.setCurrentIndex(1)
@@ -534,6 +619,17 @@ class ModelEditDialog(QDialog):
                 self._proxy_url.setText(proxy)
             else:
                 self._proxy_mode.setCurrentIndex(0)
+
+            # Type selector
+            tl_type = model_data.get("type", "llm")
+            idx = self._tl_type.findData(tl_type)
+            if idx >= 0:
+                self._tl_type.setCurrentIndex(idx)
+
+            # LLM fields
+            self._api_base.setText(model_data.get("api_base", ""))
+            self._api_key.setText(model_data.get("api_key", ""))
+            self._model.setText(model_data.get("model", ""))
             self._no_system_role.setChecked(model_data.get("no_system_role", False))
             self._no_think.setChecked(model_data.get("no_think", True))
             self._streaming.setChecked(model_data.get("streaming", True))
@@ -559,12 +655,30 @@ class ModelEditDialog(QDialog):
                 except (TypeError, ValueError):
                     pass
 
+            # Traditional API fields
+            self._baidu_app_id.setText(model_data.get("app_id", ""))
+            self._baidu_secret_key.setText(model_data.get("secret_key", ""))
+            self._tencent_secret_id.setText(model_data.get("secret_id", ""))
+            self._tencent_secret_key.setText(model_data.get("secret_key", ""))
+            region = model_data.get("region", "ap-guangzhou")
+            ridx = self._tencent_region.findData(region)
+            if ridx >= 0:
+                self._tencent_region.setCurrentIndex(ridx)
+            self._youdao_app_key.setText(model_data.get("app_key", ""))
+            self._youdao_app_secret.setText(model_data.get("app_secret", ""))
+            self._deepl_api_key.setText(model_data.get("api_key", ""))
+
+        # Trigger initial visibility
+        self._on_type_changed()
+
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
         )
         buttons.accepted.connect(self._on_accept)
         buttons.rejected.connect(self.reject)
         root.addWidget(buttons)
+
+    # ---- helpers ----
 
     def _make_override_row(self, widget):
         """Build a [checkbox + widget] row that disables the widget when unchecked."""
@@ -581,6 +695,18 @@ class ModelEditDialog(QDialog):
     def _on_proxy_mode_changed(self, index):
         self._proxy_url.setEnabled(index == 2)
 
+    def _on_type_changed(self):
+        """Show/hide LLM vs traditional API fields based on selected type."""
+        tl_type = self._tl_type.currentData()
+        is_llm = tl_type == "llm"
+        self._stack.setCurrentIndex(0 if is_llm else 1)
+        self._adv_group.setVisible(is_llm)
+
+        # Switch API-specific page inside the traditional API stack
+        if not is_llm:
+            api_index = {"baidu": 0, "tencent": 1, "youdao": 2, "deepl": 3}
+            self._api_stack.setCurrentIndex(api_index.get(tl_type, 0))
+
     def _parse_extra_body(self):
         """Return (ok, data_or_error_msg). Empty text → (True, None)."""
         text = self._adv_extra_body.toPlainText().strip()
@@ -595,57 +721,102 @@ class ModelEditDialog(QDialog):
         return True, data
 
     def _on_accept(self):
-        ok, _ = self._parse_extra_body()
-        if not ok:
-            QMessageBox.warning(
-                self, t("error_title"), t("extra_body_invalid")
-            )
+        tl_type = self._tl_type.currentData()
+        name = self._name.text().strip()
+        if not name:
+            QMessageBox.warning(self, t("error_title"), "Name is required.")
             return
+
+        if tl_type == "llm":
+            ok, _ = self._parse_extra_body()
+            if not ok:
+                QMessageBox.warning(
+                    self, t("error_title"), t("extra_body_invalid")
+                )
+                return
+        elif tl_type == "baidu":
+            if not self._baidu_app_id.text().strip() or not self._baidu_secret_key.text().strip():
+                QMessageBox.warning(self, t("error_title"), "App ID and Secret Key are required.")
+                return
+        elif tl_type == "tencent":
+            if not self._tencent_secret_id.text().strip() or not self._tencent_secret_key.text().strip():
+                QMessageBox.warning(self, t("error_title"), "Secret ID and Secret Key are required.")
+                return
+        elif tl_type == "youdao":
+            if not self._youdao_app_key.text().strip() or not self._youdao_app_secret.text().strip():
+                QMessageBox.warning(self, t("error_title"), "App Key and App Secret are required.")
+                return
+        elif tl_type == "deepl":
+            if not self._deepl_api_key.text().strip():
+                QMessageBox.warning(self, t("error_title"), "API Key is required.")
+                return
         self.accept()
 
-    def get_data(self) -> dict:
+    def _proxy_value(self) -> str:
         proxy_idx = self._proxy_mode.currentIndex()
         if proxy_idx == 1:
-            proxy = "system"
+            return "system"
         elif proxy_idx == 2:
-            proxy = self._proxy_url.text().strip() or "none"
-        else:
-            proxy = "none"
+            return self._proxy_url.text().strip() or "none"
+        return "none"
+
+    def get_data(self) -> dict:
+        tl_type = self._tl_type.currentData()
         result = {
             "name": self._name.text().strip(),
-            "api_base": self._api_base.text().strip(),
-            "api_key": self._api_key.text().strip(),
-            "model": self._model.text().strip(),
-            "proxy": proxy,
+            "type": tl_type,
+            "proxy": self._proxy_value(),
         }
-        if self._no_system_role.isChecked():
-            result["no_system_role"] = True
-        if not self._no_think.isChecked():
-            result["no_think"] = False
-        if not self._streaming.isChecked():
-            result["streaming"] = False
-        if self._json_response.isChecked():
-            result["json_response"] = True
-        if self._context_turns.value() > 0:
-            result["context_turns"] = self._context_turns.value()
-        if self._input_price.value() > 0:
-            result["input_price"] = self._input_price.value()
-        if self._output_price.value() > 0:
-            result["output_price"] = self._output_price.value()
 
-        overrides = {}
-        for key, (cb, _row, widget) in self._adv_rows.items():
-            if cb.isChecked():
-                val = widget.value()
-                if isinstance(widget, QDoubleSpinBox):
-                    val = round(val, 2)
-                overrides[key] = val
-        if overrides:
-            result["overrides"] = overrides
+        if tl_type == "llm":
+            result["api_base"] = self._api_base.text().strip()
+            result["api_key"] = self._api_key.text().strip()
+            result["model"] = self._model.text().strip()
+            if self._no_system_role.isChecked():
+                result["no_system_role"] = True
+            if not self._no_think.isChecked():
+                result["no_think"] = False
+            if not self._streaming.isChecked():
+                result["streaming"] = False
+            if self._json_response.isChecked():
+                result["json_response"] = True
+            if self._context_turns.value() > 0:
+                result["context_turns"] = self._context_turns.value()
+            if self._input_price.value() > 0:
+                result["input_price"] = self._input_price.value()
+            if self._output_price.value() > 0:
+                result["output_price"] = self._output_price.value()
 
-        ok, data = self._parse_extra_body()
-        if ok and data:
-            result["extra_body"] = data
+            overrides = {}
+            for key, (cb, _row, widget) in self._adv_rows.items():
+                if cb.isChecked():
+                    val = widget.value()
+                    if isinstance(widget, QDoubleSpinBox):
+                        val = round(val, 2)
+                    overrides[key] = val
+            if overrides:
+                result["overrides"] = overrides
+
+            ok, data = self._parse_extra_body()
+            if ok and data:
+                result["extra_body"] = data
+
+        elif tl_type == "baidu":
+            result["app_id"] = self._baidu_app_id.text().strip()
+            result["secret_key"] = self._baidu_secret_key.text().strip()
+
+        elif tl_type == "tencent":
+            result["secret_id"] = self._tencent_secret_id.text().strip()
+            result["secret_key"] = self._tencent_secret_key.text().strip()
+            result["region"] = self._tencent_region.currentData()
+
+        elif tl_type == "youdao":
+            result["app_key"] = self._youdao_app_key.text().strip()
+            result["app_secret"] = self._youdao_app_secret.text().strip()
+
+        elif tl_type == "deepl":
+            result["api_key"] = self._deepl_api_key.text().strip()
+
         return result
 
 

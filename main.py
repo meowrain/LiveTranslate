@@ -34,7 +34,7 @@ import torch  # noqa: F401
 from audio_capture import AudioCapture
 from vad_processor import VADProcessor
 from asr_engine import ASREngine
-from translator import Translator, RepetitionError
+from translator import Translator, RepetitionError, create_translator
 from transcript_writer import TranscriptWriter
 
 from PyQt6.QtWidgets import QApplication, QSystemTrayIcon, QMenu, QDialog, QMessageBox
@@ -161,14 +161,9 @@ class LiveTranslateApp:
         self._asr_lock = threading.Lock()
         self._vad_lock = threading.Lock()
         self._target_language = config["translation"]["target_language"]
-        self._translator = Translator(
-            api_base=config["translation"]["api_base"],
-            api_key=config["translation"]["api_key"],
-            model=config["translation"]["model"],
+        self._translator = create_translator(
+            model_config=config["translation"],
             target_language=self._target_language,
-            max_tokens=config["translation"]["max_tokens"],
-            temperature=config["translation"]["temperature"],
-            streaming=config["translation"]["streaming"],
             system_prompt=config["translation"].get("system_prompt"),
         )
         self._overlay = None
@@ -305,9 +300,9 @@ class LiveTranslateApp:
             _save_settings(settings)
 
     def _on_model_changed(self, model_config: dict):
-        log.info(
-            f"Switching translator: {model_config['name']} ({model_config['model']})"
-        )
+        tl_type = model_config.get("type", "llm")
+        model_name = model_config.get("model", tl_type)
+        log.info(f"Switching translator: {model_config['name']} ({model_name}) [{tl_type}]")
         prompt = None
         if self._panel:
             prompt = self._panel.get_settings().get("system_prompt")
@@ -316,24 +311,20 @@ class LiveTranslateApp:
         timeout = 10
         if self._panel:
             timeout = self._panel.get_settings().get("timeout", 10)
-        self._translator = Translator(
-            api_base=model_config["api_base"],
-            api_key=model_config["api_key"],
-            model=model_config["model"],
+
+        # Merge global defaults for LLM models
+        if tl_type == "llm":
+            model_config.setdefault("max_tokens", self._config["translation"]["max_tokens"])
+            model_config.setdefault("temperature", self._config["translation"]["temperature"])
+
+        self._translator = create_translator(
+            model_config=model_config,
             target_language=self._target_language,
-            max_tokens=self._config["translation"]["max_tokens"],
-            temperature=self._config["translation"]["temperature"],
-            streaming=model_config.get("streaming", True),
-            system_prompt=prompt,
-            proxy=model_config.get("proxy", "none"),
-            no_system_role=model_config.get("no_system_role", False),
-            no_think=model_config.get("no_think", True),
-            json_response=model_config.get("json_response", False),
             timeout=timeout,
-            overrides=model_config.get("overrides"),
-            extra_body=model_config.get("extra_body"),
+            system_prompt=prompt,
         )
-        self._translator.set_context_turns(model_config.get("context_turns", 0))
+        if hasattr(self._translator, "set_context_turns"):
+            self._translator.set_context_turns(model_config.get("context_turns", 0))
         self._input_price = model_config.get("input_price", 0)
         self._output_price = model_config.get("output_price", 0)
 
@@ -442,6 +433,26 @@ class LiveTranslateApp:
                 load_error[0] = str(e)
                 log.error(f"Failed to load ASR engine: {e}", exc_info=True)
 
+        def _on_loaded():
+            if load_error[0]:
+                QMessageBox.warning(
+                    parent,
+                    t("error_title"),
+                    t("error_load_asr").format(error=load_error[0]),
+                )
+                self._asr_type = None
+                return
+
+            self._asr = new_asr[0]
+            self._asr_type = engine_type
+            if self._panel:
+                asr_lang = self._panel.get_settings().get("asr_language", "auto")
+                self._asr.set_language(asr_lang)
+            self._asr_ready = True
+            if self._overlay:
+                self._overlay.update_asr_device(f"{display_name} [{device}]")
+            log.info(f"ASR engine ready: {engine_type} on {device}")
+
         thread = threading.Thread(target=_load, daemon=True)
         thread.start()
 
@@ -456,28 +467,12 @@ class LiveTranslateApp:
         poll_timer.timeout.connect(_check)
         poll_timer.start()
 
-        dlg.exec()
-        poll_timer.stop()
+        def _on_dialog_done():
+            poll_timer.stop()
+            _on_loaded()
 
-        if load_error[0]:
-            QMessageBox.warning(
-                parent,
-                t("error_title"),
-                t("error_load_asr").format(error=load_error[0]),
-            )
-            # Old engine was already released; mark ASR as unavailable
-            self._asr_type = None
-            return
-
-        self._asr = new_asr[0]
-        self._asr_type = engine_type
-        if self._panel:
-            asr_lang = self._panel.get_settings().get("asr_language", "auto")
-            self._asr.set_language(asr_lang)
-        self._asr_ready = True
-        if self._overlay:
-            self._overlay.update_asr_device(f"{display_name} [{device}]")
-        log.info(f"ASR engine ready: {engine_type} on {device}")
+        dlg.finished.connect(_on_dialog_done)
+        dlg.show()
 
     def _mem_snapshot(self) -> dict:
         rss_mb = self._mem_proc.memory_info().rss / 1024 / 1024
@@ -591,8 +586,11 @@ class LiveTranslateApp:
                 )
         except Exception as e:
             import openai
+            import httpx
             if isinstance(e, (openai.APIConnectionError, openai.APITimeoutError,
                               openai.AuthenticationError, openai.APIStatusError,
+                              httpx.HTTPStatusError, httpx.ConnectError,
+                              httpx.TimeoutException, RuntimeError,
                               TimeoutError, ConnectionError)):
                 log.warning(f"Translate error: {e}")
             else:
@@ -620,8 +618,11 @@ class LiveTranslateApp:
                 log.info(f"Extra translate [{lang}]: {result}")
             except Exception as e:
                 import openai
+                import httpx
                 if isinstance(e, (openai.APIConnectionError, openai.APITimeoutError,
                                   openai.AuthenticationError, openai.APIStatusError,
+                                  httpx.HTTPStatusError, httpx.ConnectError,
+                                  httpx.TimeoutException, RuntimeError,
                                   TimeoutError, ConnectionError)):
                     log.warning(f"Extra translate error: {e}")
                 else:

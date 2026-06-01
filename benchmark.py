@@ -3,7 +3,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from translator import make_openai_client
+from translator import make_openai_client, create_translator
 
 BENCH_SENTENCES = {
     "ja": [
@@ -64,8 +64,41 @@ def run_benchmark(models, source_lang, target_lang, timeout_s, prompt, result_ca
 
     def _test_model(m):
         name = m["name"]
-        lines = [f"Model: {name}", f"  {'─' * 50}"]
+        tl_type = m.get("type", "llm")
+        lines = [f"Model: {name}  [{tl_type}]", f"  {'─' * 50}"]
         try:
+            # Traditional API: use translator directly (no streaming/TTFT)
+            if tl_type != "llm":
+                translator = create_translator(
+                    model_config=m, target_language=target_lang,
+                    timeout=timeout_s, system_prompt=prompt,
+                )
+                totals = []
+                for i, text in enumerate(sentences):
+                    t0 = time.perf_counter()
+                    result_text = translator.translate(text, source_lang)
+                    total_ms = (time.perf_counter() - t0) * 1000
+                    totals.append(total_ms)
+                    lines.append(
+                        f"  Round {i + 1}: {total_ms:7.0f}ms  | {result_text[:60]}"
+                    )
+
+                avg_total = statistics.mean(totals)
+                std_total = statistics.stdev(totals) if len(totals) > 1 else 0
+                lines.append(
+                    f"  Avg: {avg_total:.0f}ms ± {std_total:.0f}ms"
+                )
+                result_callback("\n".join(lines))
+                return {
+                    "name": name,
+                    "avg_ttft": avg_total,
+                    "std_ttft": std_total,
+                    "avg_total": avg_total,
+                    "std_total": std_total,
+                    "error": None,
+                }
+
+            # LLM: existing streaming benchmark
             client = make_openai_client(
                 m["api_base"],
                 m["api_key"],
@@ -128,8 +161,8 @@ def run_benchmark(models, source_lang, target_lang, timeout_s, prompt, result_ca
             avg_ttft = statistics.mean(ttfts)
             std_ttft = statistics.stdev(ttfts) if len(ttfts) > 1 else 0
             lines.append(
-                f"  Avg: {avg_total:.0f}ms \u00b1 {std_total:.0f}ms  "
-                f"(TTFT: {avg_ttft:.0f}ms \u00b1 {std_ttft:.0f}ms)"
+                f"  Avg: {avg_total:.0f}ms ± {std_total:.0f}ms  "
+                f"(TTFT: {avg_ttft:.0f}ms ± {std_ttft:.0f}ms)"
             )
 
             result_callback("\n".join(lines))
@@ -168,8 +201,8 @@ def run_benchmark(models, source_lang, target_lang, timeout_s, prompt, result_ca
         result_callback("Ranking by Avg TTFT:")
         for i, r in enumerate(ok):
             result_callback(
-                f"  #{i + 1}  TTFT {r['avg_ttft']:6.0f}ms \u00b1 {r['std_ttft']:4.0f}ms  "
-                f"Total {r['avg_total']:6.0f}ms \u00b1 {r['std_total']:4.0f}ms  "
+                f"  #{i + 1}  TTFT {r['avg_ttft']:6.0f}ms ± {r['std_ttft']:4.0f}ms  "
+                f"Total {r['avg_total']:6.0f}ms ± {r['std_total']:4.0f}ms  "
                 f"{r['name']}"
             )
         failed = [r for r in results if r["error"]]

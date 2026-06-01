@@ -104,6 +104,69 @@ class RepetitionError(Exception):
     pass
 
 
+def create_translator(model_config: dict, target_language: str,
+                      timeout: int = 10, system_prompt: str = None):
+    """Factory: create the right translator from a model config dict.
+
+    Reads ``model_config["type"]`` (default ``"llm"``) and instantiates
+    the corresponding translator class.  All traditional API translators
+    live in ``translator_api`` to keep this module focused on LLM logic.
+    """
+    tl_type = model_config.get("type", "llm")
+
+    if tl_type == "llm":
+        return Translator(
+            api_base=model_config.get("api_base", ""),
+            api_key=model_config.get("api_key", ""),
+            model=model_config.get("model", ""),
+            target_language=target_language,
+            max_tokens=model_config.get("max_tokens", 256),
+            temperature=model_config.get("temperature", 0.3),
+            streaming=model_config.get("streaming", True),
+            system_prompt=system_prompt,
+            proxy=model_config.get("proxy", "none"),
+            no_system_role=model_config.get("no_system_role", False),
+            no_think=model_config.get("no_think", True),
+            json_response=model_config.get("json_response", False),
+            timeout=timeout,
+            overrides=model_config.get("overrides"),
+            extra_body=model_config.get("extra_body"),
+        )
+
+    from translator_api import (
+        BaiduTranslator, TencentTranslator, YoudaoTranslator, DeepLTranslator,
+    )
+
+    proxy = model_config.get("proxy", "none")
+
+    if tl_type == "baidu":
+        return BaiduTranslator(
+            app_id=model_config.get("app_id", ""),
+            secret_key=model_config.get("secret_key", ""),
+            target_language=target_language, proxy=proxy, timeout=timeout,
+        )
+    elif tl_type == "tencent":
+        return TencentTranslator(
+            secret_id=model_config.get("secret_id", ""),
+            secret_key=model_config.get("secret_key", ""),
+            region=model_config.get("region", "ap-guangzhou"),
+            target_language=target_language, proxy=proxy, timeout=timeout,
+        )
+    elif tl_type == "youdao":
+        return YoudaoTranslator(
+            app_key=model_config.get("app_key", ""),
+            app_secret=model_config.get("app_secret", ""),
+            target_language=target_language, proxy=proxy, timeout=timeout,
+        )
+    elif tl_type == "deepl":
+        return DeepLTranslator(
+            api_key=model_config.get("api_key", ""),
+            target_language=target_language, proxy=proxy, timeout=timeout,
+        )
+    else:
+        raise ValueError(f"Unknown translator type: {tl_type}")
+
+
 _OVERRIDE_KEYS = (
     "temperature",
     "top_p",
