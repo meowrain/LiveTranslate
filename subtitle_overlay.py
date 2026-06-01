@@ -354,18 +354,63 @@ def _escape(text: str) -> str:
     return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
+_BTN_PRIMARY_CSS = """
+    QPushButton {
+        background: rgba(100,160,255,45);
+        border: 1px solid rgba(100,160,255,50);
+        border-radius: 3px;
+        color: #99bbee;
+        font-size: 11px;
+        padding: 0 10px;
+    }
+    QPushButton:hover {
+        background: rgba(100,160,255,75);
+        color: #ccddff;
+    }
+"""
+
 _BTN_CSS = """
     QPushButton {
-        background: rgba(255,255,255,20);
-        border: 1px solid rgba(255,255,255,40);
+        background: rgba(255,255,255,15);
+        border: 1px solid rgba(255,255,255,30);
         border-radius: 3px;
-        color: #aaa;
+        color: #999;
         font-size: 11px;
         padding: 0 6px;
     }
     QPushButton:hover {
-        background: rgba(255,255,255,40);
+        background: rgba(255,255,255,30);
         color: #ddd;
+    }
+"""
+
+_BTN_UTILITY_CSS = """
+    QPushButton {
+        background: transparent;
+        border: 1px solid rgba(255,255,255,12);
+        border-radius: 3px;
+        color: #666;
+        font-size: 11px;
+        padding: 0 5px;
+    }
+    QPushButton:hover {
+        background: rgba(255,255,255,12);
+        color: #999;
+    }
+"""
+
+_BTN_DANGER_CSS = """
+    QPushButton {
+        background: transparent;
+        border: 1px solid rgba(255,80,80,18);
+        border-radius: 3px;
+        color: #666;
+        font-size: 11px;
+        padding: 0 5px;
+    }
+    QPushButton:hover {
+        background: rgba(255,80,80,25);
+        color: #ee8888;
     }
 """
 
@@ -587,13 +632,53 @@ _COMBO_CSS = """
 """
 
 _CHECK_CSS = (
-    "QCheckBox { color: #888; background: transparent; spacing: 3px; }"
+    "QCheckBox { color: #777; background: transparent; spacing: 4px; }"
     "QCheckBox::indicator { width: 12px; height: 12px; }"
+    "QCheckBox:hover { color: #aaa; }"
 )
 
 
+def _make_separator():
+    """Vertical separator between button groups."""
+    sep = QWidget()
+    sep.setFixedSize(1, 14)
+    sep.setStyleSheet("background: rgba(255,255,255,25);")
+    return sep
+
+
+_PAUSED_CSS = """
+    QPushButton {
+        background: rgba(220,180,60,40);
+        border: 1px solid rgba(220,180,60,45);
+        border-radius: 3px;
+        color: #ccb877;
+        font-size: 11px;
+        padding: 0 10px;
+    }
+    QPushButton:hover {
+        background: rgba(220,180,60,65);
+        color: #eeddaa;
+    }
+"""
+
+_SUBTITLE_ON_CSS = """
+    QPushButton {
+        background: rgba(80,180,80,35);
+        border: 1px solid rgba(80,180,80,50);
+        border-radius: 3px;
+        color: #88cc88;
+        font-size: 11px;
+        padding: 0 6px;
+    }
+    QPushButton:hover {
+        background: rgba(80,180,80,60);
+        color: #aaeeaa;
+    }
+"""
+
+
 class DragHandle(QWidget):
-    """Top bar: row1=title+buttons, row2=checkboxes+combos."""
+    """Top bar: row1=title+button groups, row2=checkboxes+combos."""
 
     settings_clicked = pyqtSignal()
     subtitle_clicked = pyqtSignal()
@@ -612,21 +697,25 @@ class DragHandle(QWidget):
     mode_changed = pyqtSignal(str)  # "full" or "compact"
     position_changed = pyqtSignal()
 
+    _GRP_CSS = "background: rgba(255,255,255,5); border-radius: 4px;"
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self._mode = "full"
+        self._running = False
         self.setFixedHeight(62)
         self.setStyleSheet("background: rgba(60, 60, 80, 200); border-radius: 4px;")
 
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(8, 2, 8, 2)
+        outer.setContentsMargins(8, 3, 8, 3)
         outer.setSpacing(2)
 
-        # Row 1: drag title + action buttons
+        # \u2500\u2500 Row 1: title + 3 button groups with separators \u2500\u2500
         row1 = QHBoxLayout()
         row1.setContentsMargins(0, 0, 0, 0)
-        row1.setSpacing(3)
+        row1.setSpacing(0)
 
+        # Drag area with title
         drag = _DragArea()
         drag.drag_finished.connect(self.position_changed)
         drag.setStyleSheet("background: transparent;")
@@ -636,76 +725,89 @@ class DragHandle(QWidget):
 
         title = QLabel("\u2630 LiveTranslate")
         title.setFont(QFont("Consolas", 9, QFont.Weight.Bold))
-        title.setStyleSheet("color: #aaa; background: transparent;")
+        title.setStyleSheet("color: #999; background: transparent;")
         drag_layout.addWidget(title)
         drag_layout.addStretch()
         row1.addWidget(drag, 1)
 
-        def _btn(text, tip=None):
+        def _btn(text, css=_BTN_CSS):
             b = QPushButton(text)
-            b.setFixedHeight(20)
+            b.setFixedHeight(22)
             b.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
             b.setFont(QFont("Consolas", 8))
-            b.setStyleSheet(_BTN_CSS)
-            if tip:
-                b.setToolTip(tip)
+            b.setStyleSheet(css)
             return b
 
-        hide_btn = _btn(t("hide"))
-        hide_btn.clicked.connect(self.hide_clicked.emit)
-        row1.addWidget(hide_btn)
+        # Group 1: Primary action (Start/Stop)
+        grp1 = QWidget()
+        grp1.setStyleSheet(self._GRP_CSS)
+        g1 = QHBoxLayout(grp1)
+        g1.setContentsMargins(4, 2, 4, 2)
+        g1.setSpacing(0)
+
+        self._start_stop_btn = _btn(t("paused"), _PAUSED_CSS)
+        self._start_stop_btn.clicked.connect(self._on_start_stop)
+        g1.addWidget(self._start_stop_btn)
+        row1.addWidget(grp1)
+
+        self._sep1 = _make_separator()
+        row1.addWidget(self._sep1)
+
+        # Group 2: Secondary actions (Subtitle, Clear)
+        self._grp2 = QWidget()
+        self._grp2.setStyleSheet(self._GRP_CSS)
+        g2 = QHBoxLayout(self._grp2)
+        g2.setContentsMargins(3, 2, 3, 2)
+        g2.setSpacing(4)
 
         self._subtitle_btn = _btn(t("subtitle"))
         self._subtitle_btn.clicked.connect(self.subtitle_clicked.emit)
-        row1.addWidget(self._subtitle_btn)
-
-        self._running = False
-        self._start_stop_btn = _btn(t("paused"))
-        self._start_stop_btn.clicked.connect(self._on_start_stop)
-        row1.addWidget(self._start_stop_btn)
+        g2.addWidget(self._subtitle_btn)
 
         self._clear_btn = _btn(t("clear"))
         self._clear_btn.clicked.connect(self.clear_clicked.emit)
-        row1.addWidget(self._clear_btn)
+        g2.addWidget(self._clear_btn)
+        row1.addWidget(self._grp2)
 
-        # Mode toggle button
-        self._mode_btn = _btn(t("mode_full"))
+        self._sep2 = _make_separator()
+        row1.addWidget(self._sep2)
+
+        # Group 3: Utilities (Mode, Settings, Quit)
+        self._grp3 = QWidget()
+        self._grp3.setStyleSheet(self._GRP_CSS)
+        g3 = QHBoxLayout(self._grp3)
+        g3.setContentsMargins(3, 2, 3, 2)
+        g3.setSpacing(4)
+
+        self._mode_btn = _btn(t("mode_full"), _BTN_UTILITY_CSS)
         self._mode_btn.clicked.connect(self._toggle_mode)
-        row1.addWidget(self._mode_btn)
+        g3.addWidget(self._mode_btn)
 
-        settings_btn = _btn(t("settings"))
-        settings_btn.clicked.connect(self.settings_clicked.emit)
-        row1.addWidget(settings_btn)
+        self._settings_btn = _btn(t("settings"), _BTN_UTILITY_CSS)
+        self._settings_btn.clicked.connect(self.settings_clicked.emit)
+        g3.addWidget(self._settings_btn)
 
-        quit_btn = _btn(t("quit"))
-        quit_btn.setStyleSheet(
-            _BTN_CSS.replace("rgba(255,255,255,20)", "rgba(200,60,60,40)").replace(
-                "rgba(255,255,255,40)", "rgba(200,60,60,80)"
-            )
-        )
+        quit_btn = _btn(t("quit"), _BTN_DANGER_CSS)
         quit_btn.clicked.connect(self.quit_clicked.emit)
-        row1.addWidget(quit_btn)
+        g3.addWidget(quit_btn)
+        row1.addWidget(self._grp3)
 
         outer.addLayout(row1)
 
-        # Row 2 area: checkboxes (row 2a) + model/lang combos (row 2b)
+        # \u2500\u2500 Row 2: checkboxes (left) + combos (right) \u2500\u2500
         self._row2_widget = QWidget()
         self._row2_widget.setStyleSheet("background: transparent;")
-        row2_outer = QVBoxLayout(self._row2_widget)
-        row2_outer.setContentsMargins(0, 0, 0, 0)
-        row2_outer.setSpacing(2)
+        row2 = QHBoxLayout(self._row2_widget)
+        row2.setContentsMargins(0, 0, 0, 0)
+        row2.setSpacing(6)
 
-        # Row 2a: checkboxes
-        row2a = QHBoxLayout()
-        row2a.setContentsMargins(0, 0, 0, 0)
-        row2a.setSpacing(6)
-
+        # Checkboxes
         self._ct_check = QCheckBox(t("click_through"))
         self._ct_check.setFont(QFont("Consolas", 8))
         self._ct_check.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
         self._ct_check.setStyleSheet(_CHECK_CSS)
         self._ct_check.toggled.connect(self.click_through_toggled.emit)
-        row2a.addWidget(self._ct_check)
+        row2.addWidget(self._ct_check)
 
         self._topmost_check = QCheckBox(t("top_most"))
         self._topmost_check.setFont(QFont("Consolas", 8))
@@ -713,7 +815,7 @@ class DragHandle(QWidget):
         self._topmost_check.setStyleSheet(_CHECK_CSS)
         self._topmost_check.setChecked(True)
         self._topmost_check.toggled.connect(self.topmost_toggled.emit)
-        row2a.addWidget(self._topmost_check)
+        row2.addWidget(self._topmost_check)
 
         self._auto_scroll = QCheckBox(t("auto_scroll"))
         self._auto_scroll.setFont(QFont("Consolas", 8))
@@ -721,7 +823,7 @@ class DragHandle(QWidget):
         self._auto_scroll.setStyleSheet(_CHECK_CSS)
         self._auto_scroll.setChecked(True)
         self._auto_scroll.toggled.connect(self.auto_scroll_toggled.emit)
-        row2a.addWidget(self._auto_scroll)
+        row2.addWidget(self._auto_scroll)
 
         self._taskbar_check = QCheckBox(t("taskbar"))
         self._taskbar_check.setFont(QFont("Consolas", 8))
@@ -729,44 +831,29 @@ class DragHandle(QWidget):
         self._taskbar_check.setStyleSheet(_CHECK_CSS)
         self._taskbar_check.setChecked(False)
         self._taskbar_check.toggled.connect(self.taskbar_toggled.emit)
-        row2a.addWidget(self._taskbar_check)
+        row2.addWidget(self._taskbar_check)
 
-        row2a.addStretch()
-        row2_outer.addLayout(row2a)
+        row2.addStretch()
 
-        # Row 2b: model + source language + target language combos (stretch to fill)
-        row2b = QHBoxLayout()
-        row2b.setContentsMargins(0, 0, 0, 0)
-        row2b.setSpacing(4)
-
-        _lbl_css = "color: #888; background: transparent;"
-        _lbl_font = QFont("Consolas", 8)
+        # Combos
         _combo_font = QFont("Consolas", 8)
-
-        model_lbl = QLabel(t("model_label"))
-        model_lbl.setFont(_lbl_font)
-        model_lbl.setStyleSheet(_lbl_css)
-        row2b.addWidget(model_lbl)
 
         self._model_combo = QComboBox()
         self._model_combo.setFixedHeight(18)
         self._model_combo.setFont(_combo_font)
         self._model_combo.setStyleSheet(_COMBO_CSS)
+        self._model_combo.setPlaceholderText(t("model_label"))
         self._model_combo.setSizePolicy(
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
         )
         self._model_combo.currentIndexChanged.connect(self.model_changed.emit)
-        row2b.addWidget(self._model_combo, 3)
-
-        src_lbl = QLabel(t("source_label"))
-        src_lbl.setFont(_lbl_font)
-        src_lbl.setStyleSheet(_lbl_css)
-        row2b.addWidget(src_lbl)
+        row2.addWidget(self._model_combo, 3)
 
         self._source_lang = QComboBox()
         self._source_lang.setFixedHeight(18)
         self._source_lang.setFont(_combo_font)
         self._source_lang.setStyleSheet(_COMBO_CSS)
+        self._source_lang.setPlaceholderText(t("source_label"))
         self._source_lang.setSizePolicy(
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
         )
@@ -778,17 +865,13 @@ class DragHandle(QWidget):
                 self._source_lang.currentData() or "auto"
             )
         )
-        row2b.addWidget(self._source_lang, 2)
-
-        tgt_lbl = QLabel(t("target_label"))
-        tgt_lbl.setFont(_lbl_font)
-        tgt_lbl.setStyleSheet(_lbl_css)
-        row2b.addWidget(tgt_lbl)
+        row2.addWidget(self._source_lang, 2)
 
         self._target_lang = QComboBox()
         self._target_lang.setFixedHeight(18)
         self._target_lang.setFont(_combo_font)
         self._target_lang.setStyleSheet(_COMBO_CSS)
+        self._target_lang.setPlaceholderText(t("target_label"))
         self._target_lang.setSizePolicy(
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
         )
@@ -801,9 +884,7 @@ class DragHandle(QWidget):
                 self._target_lang.currentData() or "zh"
             )
         )
-        row2b.addWidget(self._target_lang, 2)
-
-        row2_outer.addLayout(row2b)
+        row2.addWidget(self._target_lang, 2)
 
         outer.addWidget(self._row2_widget)
 
@@ -812,10 +893,6 @@ class DragHandle(QWidget):
             self.stop_clicked.emit()
         else:
             self.start_clicked.emit()
-
-    _PAUSED_CSS = _BTN_CSS.replace(
-        "rgba(255,255,255,20)", "rgba(220,180,60,50)"
-    ).replace("color: #aaa", "color: #ddb")
 
     def set_target_language(self, lang: str):
         idx = self._target_lang.findData(lang)
@@ -848,10 +925,10 @@ class DragHandle(QWidget):
         self._running = running
         if running:
             self._start_stop_btn.setText(t("running"))
-            self._start_stop_btn.setStyleSheet(_BTN_CSS)
+            self._start_stop_btn.setStyleSheet(_BTN_PRIMARY_CSS)
         else:
             self._start_stop_btn.setText(t("paused"))
-            self._start_stop_btn.setStyleSheet(self._PAUSED_CSS)
+            self._start_stop_btn.setStyleSheet(_PAUSED_CSS)
 
     def _toggle_mode(self):
         new_mode = "compact" if self._mode == "full" else "full"
@@ -862,10 +939,14 @@ class DragHandle(QWidget):
         self._mode = mode
         compact = mode == "compact"
         self._row2_widget.setVisible(not compact)
-        self._clear_btn.setVisible(not compact)
-        self._subtitle_btn.setVisible(not compact)
+        # Row 1: hide secondary group + both separators; keep grp1 and grp3
+        self._grp2.setVisible(not compact)
+        self._sep1.setVisible(not compact)
+        self._sep2.setVisible(not compact)
+        # grp3: hide settings in compact, keep mode_btn + quit
+        self._settings_btn.setVisible(not compact)
         self._mode_btn.setText(t("mode_compact") if compact else t("mode_full"))
-        self.setFixedHeight(24 if compact else 62)
+        self.setFixedHeight(30 if compact else 62)
 
     def set_mode(self, mode: str):
         if mode != self._mode:
@@ -873,9 +954,7 @@ class DragHandle(QWidget):
 
     def set_subtitle_checked(self, checked: bool):
         self._subtitle_btn.setStyleSheet(
-            _BTN_CSS.replace("rgba(255,255,255,20)", "rgba(80,180,80,40)").replace(
-                "rgba(255,255,255,40)", "rgba(80,180,80,80)"
-            ) if checked else _BTN_CSS
+            _SUBTITLE_ON_CSS if checked else _BTN_CSS
         )
 
 
