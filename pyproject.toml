@@ -1,0 +1,50 @@
+[project]
+name = "livetranslate"
+version = "0.1.0"
+description = "Real-time audio translation system for Windows"
+requires-python = ">=3.10"
+dependencies = [
+    # Core
+    "numpy>=1.24.0",
+    "pyyaml>=6.0",
+    "httpx>=0.28.0",
+    "openai>=1.0.0",
+    "psutil>=5.9.0",
+    # Audio capture (Windows WASAPI loopback)
+    "pyaudiowpatch>=0.2.12",
+    # ASR engines
+    "funasr>=1.0.0",
+    "faster-whisper>=1.0.0",
+    "editdistance-s>=1.0.0",
+    "omegaconf>=2.3.0",
+    "kaldiio>=2.18.0",
+    "torch-complex>=0.4.0",
+    "soundfile>=0.12.0",
+    "librosa>=0.10.0",
+    "jaconv>=0.3.0",
+    "jamo>=0.4.1",
+    "hydra-core>=1.3.0",
+    "six>=1.16.0",
+    "sentencepiece>=0.2.0",
+    "tiktoken>=0.7.0",
+    "pysbd>=0.3.4",
+    "transformers>=4.40.0",
+    # Model hubs
+    "modelscope>=1.20.0",
+    "huggingface-hub>=0.20.0",
+    # UI
+    "pyqt6>=6.5.0",
+    # torch & torchaudio with CUDA
+    "torch>=2.0.0",
+    "torchaudio>=2.0.0",
+]
+
+# PyTorch CUDA index — change to cu128 for Blackwell (RTX 50xx)
+[[tool.uv.index]]
+name = "pytorch-cu126"
+url = "https://download.pytorch.org/whl/cu126"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu126" }
+torchaudio = { index = "pytorch-cu126" }
