@@ -86,6 +86,7 @@ class ControlPanel(QWidget):
         self.setWindowTitle(t("window_control_panel"))
         self.setMinimumSize(480, 560)
         self.resize(520, 650)
+        self.setWindowFlags(self.windowFlags() | Qt.WindowType.Tool)
 
         saved = saved_settings or _load_saved_settings()
         if saved:
@@ -457,6 +458,9 @@ class ControlPanel(QWidget):
         del_btn = QPushButton(t("btn_remove"))
         del_btn.clicked.connect(self._remove_model)
         btn_row.addWidget(del_btn)
+        activate_btn = QPushButton(t("btn_set_active"))
+        activate_btn.clicked.connect(self._set_active_model)
+        btn_row.addWidget(activate_btn)
         models_layout.addLayout(btn_row)
         layout.addWidget(models_group)
 
@@ -1069,15 +1073,32 @@ class ControlPanel(QWidget):
     # ── Model Management ──
 
     def _refresh_model_list(self):
+        from translator_api import TRANSLATOR_TYPES
+
         self._model_list.clear()
         active = self._current_settings.get("active_model", 0)
         for i, m in enumerate(self._current_settings.get("models", [])):
             prefix = ">>> " if i == active else "    "
             proxy = m.get("proxy", "none")
             proxy_tag = f"  [proxy: {proxy}]" if proxy != "none" else ""
-            text = (
-                f"{prefix}{m['name']}{proxy_tag}\n     {m['api_base']}  |  {m['model']}"
-            )
+            tl_type = m.get("type", "llm")
+            type_label = TRANSLATOR_TYPES.get(tl_type, tl_type)
+            type_tag = f"  [{type_label}]" if tl_type != "llm" else ""
+
+            if tl_type == "llm":
+                detail = f"{m.get('api_base', '')}  |  {m.get('model', '')}"
+            elif tl_type == "baidu":
+                detail = f"app_id: {m.get('app_id', '?')}"
+            elif tl_type == "tencent":
+                detail = f"secret_id: {m.get('secret_id', '?')[:8]}...  |  {m.get('region', '')}"
+            elif tl_type == "youdao":
+                detail = f"app_key: {m.get('app_key', '?')[:8]}..."
+            elif tl_type == "deepl":
+                detail = "DeepL API"
+            else:
+                detail = ""
+
+            text = f"{prefix}{m['name']}{type_tag}{proxy_tag}\n     {detail}"
             item = QListWidgetItem(text)
             if i == active:
                 font = item.font()
@@ -1092,13 +1113,17 @@ class ControlPanel(QWidget):
 
     def _add_model(self):
         dlg = ModelEditDialog(self)
-        if dlg.exec():
+
+        def _on_accept():
             data = dlg.get_data()
-            if data["name"] and data["model"]:
+            if data["name"]:
                 self._current_settings.setdefault("models", []).append(data)
                 self._refresh_model_list()
                 _save_settings(self._current_settings)
                 self._emit_models_list_changed()
+
+        dlg.accepted.connect(_on_accept)
+        dlg.show()
 
     def _edit_model(self):
         row = self._model_list.currentRow()
@@ -1106,17 +1131,20 @@ class ControlPanel(QWidget):
         if row < 0 or row >= len(models):
             return
         dlg = ModelEditDialog(self, models[row])
-        if dlg.exec():
+
+        def _on_accept():
             data = dlg.get_data()
-            if data["name"] and data["model"]:
+            if data["name"]:
                 models[row] = data
                 self._refresh_model_list()
                 _save_settings(self._current_settings)
                 self._emit_models_list_changed()
-                # Re-apply if editing the active model
                 active = self._current_settings.get("active_model", 0)
                 if row == active:
                     self.model_changed.emit(data)
+
+        dlg.accepted.connect(_on_accept)
+        dlg.show()
 
     def _dup_model(self):
         row = self._model_list.currentRow()
@@ -1141,6 +1169,16 @@ class ControlPanel(QWidget):
             self._current_settings["active_model"] = len(models) - 1
         self._refresh_model_list()
         self._model_list.setCurrentRow(min(row, len(models) - 1))
+        _save_settings(self._current_settings)
+        self._emit_models_list_changed()
+
+    def _set_active_model(self):
+        row = self._model_list.currentRow()
+        models = self._current_settings.get("models", [])
+        if row < 0 or row >= len(models):
+            return
+        self._current_settings["active_model"] = row
+        self._refresh_model_list()
         _save_settings(self._current_settings)
         self._emit_models_list_changed()
 
