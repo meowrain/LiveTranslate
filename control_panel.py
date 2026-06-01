@@ -8,6 +8,7 @@ from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QFont
 from PyQt6.QtWidgets import (
     QApplication,
+    QCheckBox,
     QColorDialog,
     QComboBox,
     QDoubleSpinBox,
@@ -16,6 +17,7 @@ from PyQt6.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QListWidget,
     QListWidgetItem,
     QMessageBox,
@@ -174,6 +176,7 @@ class ControlPanel(QWidget):
                 "Fun-ASR-Nano (FunASR)",
                 "Fun-ASR-MLT-Nano (FunASR, 31 langs)",
                 "Anime-Whisper (ja, anime/galgame)",
+                t("dashscope_asr_label"),
             ]
         )
         engine_map_idx = {
@@ -182,6 +185,7 @@ class ControlPanel(QWidget):
             "funasr-nano": 2,
             "funasr-mlt-nano": 3,
             "anime-whisper": 4,
+            "dashscope": 5,
         }
         engine_idx = engine_map_idx.get(s.get("asr_engine"), 0)
         self._asr_engine.setCurrentIndex(engine_idx)
@@ -318,6 +322,45 @@ class ControlPanel(QWidget):
         )
         self._update_whisper_size_label()
 
+        # DashScope config — only visible when engine is DashScope
+        self._dashscope_group = QGroupBox(t("group_dashscope"))
+        ds_layout = QGridLayout(self._dashscope_group)
+        ds_layout.setColumnStretch(0, 1)
+        ds_layout.setColumnMinimumWidth(1, 180)
+
+        self._ds_api_key = QLineEdit()
+        self._ds_api_key.setEchoMode(QLineEdit.EchoMode.Password)
+        self._ds_api_key.setPlaceholderText(t("dashscope_api_key_placeholder"))
+        saved_key = s.get("dashscope_api_key", "")
+        self._ds_api_key.setText(saved_key)
+        self._ds_api_key.textChanged.connect(self._auto_save)
+        ds_layout.addWidget(QLabel(t("label_api_key")), 0, 0)
+        ds_layout.addWidget(self._ds_api_key, 0, 1)
+
+        self._ds_model = QComboBox()
+        from asr_dashscope import DASHSCOPE_MODELS
+
+        for model_id, model_name in DASHSCOPE_MODELS.items():
+            self._ds_model.addItem(model_name, model_id)
+        saved_ds_model = s.get("dashscope_model", "qwen3-asr-flash-realtime")
+        idx = self._ds_model.findData(saved_ds_model)
+        if idx >= 0:
+            self._ds_model.setCurrentIndex(idx)
+        self._ds_model.currentIndexChanged.connect(self._auto_save)
+        ds_layout.addWidget(QLabel(t("dashscope_model")), 1, 0)
+        ds_layout.addWidget(self._ds_model, 1, 1)
+
+        self._ds_server_vad = QCheckBox(t("dashscope_server_vad"))
+        self._ds_server_vad.setChecked(s.get("dashscope_server_vad", False))
+        self._ds_server_vad.stateChanged.connect(self._auto_save)
+        ds_layout.addWidget(self._ds_server_vad, 2, 0, 1, 2)
+
+        layout.addWidget(self._dashscope_group)
+        self._dashscope_group.setVisible(engine_idx == 5)
+        self._asr_engine.currentIndexChanged.connect(
+            self._on_engine_changed_dashscope_vis
+        )
+
         mode_group = QGroupBox(t("group_vad_mode"))
         mode_layout = QVBoxLayout(mode_group)
         self._vad_mode = QComboBox()
@@ -402,8 +445,6 @@ class ControlPanel(QWidget):
         timing_layout.addWidget(self._silence_mode, 2, 1)
         timing_layout.addWidget(QLabel(t("label_silence_dur")), 3, 0)
         timing_layout.addWidget(self._silence_duration, 3, 1)
-
-        from PyQt6.QtWidgets import QCheckBox
 
         self._incremental_asr_cb = QCheckBox(t("label_incremental_asr"))
         self._incremental_asr_cb.setToolTip(t("incremental_asr_tooltip"))
@@ -903,8 +944,6 @@ class ControlPanel(QWidget):
         return widget
 
     def _create_cache_tab(self):
-        from PyQt6.QtWidgets import QCheckBox
-
         widget = QWidget()
         layout = QVBoxLayout(widget)
         s = self._current_settings
@@ -1018,6 +1057,14 @@ class ControlPanel(QWidget):
     def _on_engine_changed_whisper_vis(self, index):
         self._whisper_group.setVisible(index == 0)
         # Resize window to fit content after whisper group visibility change
+        def _fit():
+            self.adjustSize()
+            h = self.sizeHint().height() + 20
+            self.resize(self.width(), max(h, self.minimumHeight()))
+        QTimer.singleShot(0, _fit)
+
+    def _on_engine_changed_dashscope_vis(self, index):
+        self._dashscope_group.setVisible(index == 5)
         def _fit():
             self.adjustSize()
             h = self.sizeHint().height() + 20
@@ -1316,6 +1363,7 @@ class ControlPanel(QWidget):
             2: "funasr-nano",
             3: "funasr-mlt-nano",
             4: "anime-whisper",
+            5: "dashscope",
         }
         self._current_settings["asr_engine"] = engine_map[
             self._asr_engine.currentIndex()
@@ -1352,6 +1400,13 @@ class ControlPanel(QWidget):
             )
         if hasattr(self, "_style_preset"):
             self._current_settings["style"] = self._collect_style()
+        # DashScope settings
+        if hasattr(self, "_ds_api_key"):
+            self._current_settings["dashscope_api_key"] = self._ds_api_key.text().strip()
+        if hasattr(self, "_ds_model"):
+            self._current_settings["dashscope_model"] = self._ds_model.currentData() or "qwen3-asr-flash-realtime"
+        if hasattr(self, "_ds_server_vad"):
+            self._current_settings["dashscope_server_vad"] = self._ds_server_vad.isChecked()
         safe = {
             k: v
             for k, v in self._current_settings.items()

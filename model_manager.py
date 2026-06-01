@@ -20,6 +20,7 @@ ASR_DISPLAY_NAMES = {
     "funasr-mlt-nano": "Fun-ASR-MLT-Nano",
     "whisper": "Whisper",
     "anime-whisper": "Anime-Whisper",
+    "dashscope": "DashScope Realtime ASR",
 }
 
 _MODEL_SIZE_BYTES = {
@@ -108,6 +109,8 @@ def is_asr_cached(engine_type, model_size="medium", hub="ms") -> bool:
             / "hub"
             / f"models--Systran--faster-whisper-{model_size}"
         ).exists()
+    elif engine_type == "dashscope":
+        return True  # Cloud engine, no local cache needed
     return True
 
 

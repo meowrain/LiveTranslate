@@ -32,6 +32,8 @@ dependencies = [
     # Model hubs
     "modelscope>=1.20.0",
     "huggingface-hub>=0.20.0",
+    # Cloud ASR
+    "dashscope>=1.25.6",
     # UI
     "pyqt6>=6.5.0",
     # torch & torchaudio with CUDA
