@@ -188,6 +188,14 @@ class _SubtitleTextWidget(QWidget):
         self._update_height()
         self.update()
 
+    def set_font_size(self, size: int):
+        """Update font size without re-applying full config."""
+        if self._font.pointSize() != size:
+            self._font.setPointSize(size)
+            self._text_cache = None
+            self._update_height()
+            self.update()
+
     def set_text(self, text: str):
         if self._text and text != self._text and self._exit_animation != "none":
             self._pending_text = text
@@ -480,11 +488,32 @@ class _SubtitleTextWidget(QWidget):
         painter.end()
 
 
+_RESIZE_MARGIN = 8
+
+_EDGE_LEFT = 1
+_EDGE_RIGHT = 2
+_EDGE_TOP = 4
+_EDGE_BOTTOM = 8
+
+
+def _edge_to_cursor(edge: int) -> Qt.CursorShape:
+    if edge == _EDGE_LEFT or edge == _EDGE_RIGHT:
+        return Qt.CursorShape.SizeHorCursor
+    if edge == _EDGE_TOP or edge == _EDGE_BOTTOM:
+        return Qt.CursorShape.SizeVerCursor
+    if edge == (_EDGE_TOP | _EDGE_LEFT) or edge == (_EDGE_BOTTOM | _EDGE_RIGHT):
+        return Qt.CursorShape.SizeFDiagCursor
+    if edge == (_EDGE_TOP | _EDGE_RIGHT) or edge == (_EDGE_BOTTOM | _EDGE_LEFT):
+        return Qt.CursorShape.SizeBDiagCursor
+    return Qt.CursorShape.ArrowCursor
+
+
 class SubtitleWindow(QWidget):
     """Clean text-only subtitle window for OBS capture.
 
-    Middle-click anywhere to drag. Window width is fixed (set in settings),
-    height auto-fits to text content.
+    Left-click empty area to drag, edge/corner to resize.
+    Middle-click anywhere to drag (backward compat).
+    Window width is fixed (set in settings), height auto-fits to text content.
     """
 
     update_text_signal = pyqtSignal(str, str)  # original, translations_json
@@ -498,6 +527,17 @@ class SubtitleWindow(QWidget):
         self._sentences = []  # [(original, {lang: text, ...}), ...]
         self._drag_pos = None
         self._bg_pixmap = None
+        # Edge resize state
+        self._resize_edge = 0
+        self._resize_start_geo = None
+        self._resize_start_pos = None
+        # Font scaling state
+        self._base_width = self._settings.get("window_width", 1000)
+        self._base_font_sizes = [
+            l.get("font_size", 24) for l in self._settings.get("lines", []) if l.get("enabled", True)
+        ]
+        self._current_scale = 1.0
+        self._scaling_active = False  # True during font scaling to skip height animation
         # Auto-hide state
         self._auto_hide_timer = QTimer(self)
         self._auto_hide_timer.setSingleShot(True)
@@ -553,7 +593,8 @@ class SubtitleWindow(QWidget):
                 self.move(100, 100)
         else:
             self.move(100, 100)
-        self.setFixedWidth(w)
+        self.resize(w, 100)
+        self.setMinimumWidth(200)
 
         self._main_layout = QVBoxLayout(self)
         self._main_layout.setContentsMargins(0, 0, 0, 0)
@@ -569,6 +610,7 @@ class SubtitleWindow(QWidget):
         self._rebuild_text_widgets()
 
         self._main_layout.addWidget(self._content)
+        self.setMouseTracking(True)
 
         self._apply_background()
         self._fit_height_animated()
@@ -629,6 +671,8 @@ class SubtitleWindow(QWidget):
         self.position_changed.emit()
 
     def _fit_height_animated(self):
+        if self._scaling_active:
+            return  # skip animation during font scaling (resize drag)
         new_h = self._calc_target_height()
         old_h = self.height()
         if new_h == old_h:
@@ -675,7 +719,13 @@ class SubtitleWindow(QWidget):
         self._content_layout.setSpacing(self._settings.get("line_spacing", 8))
 
         w = self._settings.get("window_width", 1000)
-        self.setFixedWidth(w)
+        self._base_width = w
+        self._base_font_sizes = [
+            l.get("font_size", 24) for l in self._settings.get("lines", []) if l.get("enabled", True)
+        ]
+        self._current_scale = self.width() / w if w > 0 else 1.0
+        self.resize(w, self.height())
+        self.setMinimumWidth(200)
 
         self._apply_background()
         self._refresh_display()
@@ -739,26 +789,113 @@ class SubtitleWindow(QWidget):
             tw._entry_animation = old_entry
             tw._animation_duration = old_dur
 
-    # --- Middle-click drag ---
+    # --- Left-click drag + edge resize ---
+
+    def _detect_edge(self, pos: QPoint) -> int:
+        m = _RESIZE_MARGIN
+        w, h = self.width(), self.height()
+        edge = 0
+        if pos.x() < m:
+            edge |= _EDGE_LEFT
+        elif pos.x() > w - m:
+            edge |= _EDGE_RIGHT
+        if pos.y() < m:
+            edge |= _EDGE_TOP
+        elif pos.y() > h - m:
+            edge |= _EDGE_BOTTOM
+        return edge
+
     def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            edge = self._detect_edge(event.pos())
+            if edge:
+                self._resize_edge = edge
+                self._resize_start_geo = self.geometry()
+                self._resize_start_pos = event.globalPosition().toPoint()
+                event.accept()
+                return
+            # Left-click empty area → drag
+            self._drag_pos = (
+                event.globalPosition().toPoint()
+                - self.frameGeometry().topLeft()
+            )
+            event.accept()
+            return
         if event.button() == Qt.MouseButton.MiddleButton:
             self._drag_pos = (
                 event.globalPosition().toPoint()
                 - self.frameGeometry().topLeft()
             )
+            event.accept()
+            return
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event):
-        if self._drag_pos and event.buttons() & Qt.MouseButton.MiddleButton:
+        # Edge resize
+        if self._resize_edge and self._resize_start_geo:
+            diff = event.globalPosition().toPoint() - self._resize_start_pos
+            geo = self._resize_start_geo
+            left, top = geo.x(), geo.y()
+            right, bottom = left + geo.width(), top + geo.height()
+            min_w = self.minimumWidth() or 200
+            min_h = self.minimumHeight() or 60
+            if self._resize_edge & _EDGE_LEFT:
+                left = min(left + diff.x(), right - min_w)
+            elif self._resize_edge & _EDGE_RIGHT:
+                right = max(right + diff.x(), left + min_w)
+            if self._resize_edge & _EDGE_TOP:
+                top = min(top + diff.y(), bottom - min_h)
+            elif self._resize_edge & _EDGE_BOTTOM:
+                bottom = max(bottom + diff.y(), top + min_h)
+            self.setGeometry(left, top, right - left, bottom - top)
+            event.accept()
+            return
+        # Drag
+        if self._drag_pos and (event.buttons() & (Qt.MouseButton.LeftButton | Qt.MouseButton.MiddleButton)):
             self.move(event.globalPosition().toPoint() - self._drag_pos)
+            event.accept()
+            return
+        # Cursor feedback for edges
+        if not (event.buttons() & Qt.MouseButton.LeftButton):
+            edge = self._detect_edge(event.pos())
+            if edge:
+                self.setCursor(_edge_to_cursor(edge))
+            else:
+                self.setCursor(Qt.CursorShape.ArrowCursor)
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event):
-        if event.button() == Qt.MouseButton.MiddleButton:
+        if self._resize_edge:
+            self._resize_edge = 0
+            self._resize_start_geo = None
+            self._resize_start_pos = None
+            self.position_changed.emit()
+            event.accept()
+            return
+        if event.button() in (Qt.MouseButton.LeftButton, Qt.MouseButton.MiddleButton):
             if self._drag_pos:
                 self._drag_pos = None
                 self.position_changed.emit()
+                event.accept()
+                return
         super().mouseReleaseEvent(event)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        # Scale fonts proportionally to window width
+        if self._base_width > 0 and self._base_font_sizes:
+            scale = self.width() / self._base_width
+            if abs(scale - self._current_scale) > 0.01:
+                self._current_scale = scale
+                self._scaling_active = True
+                try:
+                    for tw, base_size in zip(self._text_widgets, self._base_font_sizes):
+                        new_size = max(8, int(base_size * scale))
+                        tw.set_font_size(new_size)
+                finally:
+                    self._scaling_active = False
+                # Snap height immediately (no animation during resize)
+                self._fit_height_snap()
 
     def closeEvent(self, event):
         self.window_closed.emit()
