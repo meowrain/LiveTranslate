@@ -162,6 +162,7 @@ class LiveTranslateApp:
         self._vad_lock = threading.Lock()
         self._target_language = config["translation"]["target_language"]
         self._translator = None  # Created lazily in _deferred_init via _on_model_changed
+        self._on_asr_ready_callback = None  # Called when ASR finishes loading
         self._overlay = None
         self._subwin = None
         self._panel = None
@@ -474,6 +475,8 @@ class LiveTranslateApp:
             if self._overlay:
                 self._overlay.update_asr_device(f"{display_name} [{device}]")
             log.info(f"ASR engine ready: {engine_type} on {device}")
+            if self._on_asr_ready_callback:
+                self._on_asr_ready_callback()
 
         thread = threading.Thread(target=_load, daemon=True)
         thread.start()
@@ -1307,14 +1310,7 @@ def main():
         active_model = panel.get_active_model()
         if active_model:
             live_trans._on_model_changed(active_model)
-        # Start pipeline immediately after init (no extra delay)
-        try:
-            live_trans.start()
-            overlay.set_running(True)
-            _is_running[0] = True
-            pause_action.setText(t("tray_pause"))
-        except Exception as e:
-            log.error(f"Start error: {e}", exc_info=True)
+        # Pipeline will start when ASR engine is loaded (via _on_asr_ready_callback)
 
     QTimer.singleShot(100, _deferred_init)
 
@@ -1327,6 +1323,18 @@ def main():
     # --- Pause / Resume toggle ---
     pause_action = QAction(t("tray_pause"))
     _is_running = [True]  # mutable for closure
+
+    def _start_pipeline():
+        """Start the audio pipeline (called when ASR engine is ready)."""
+        try:
+            live_trans.start()
+            overlay.set_running(True)
+            _is_running[0] = True
+            pause_action.setText(t("tray_pause"))
+        except Exception as e:
+            log.error(f"Start error: {e}", exc_info=True)
+
+    live_trans._on_asr_ready_callback = _start_pipeline
 
     def on_pause():
         live_trans.pause()
